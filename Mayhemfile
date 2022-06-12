@@ -1,0 +1,10 @@
+project: libmesh
+target: meshtool-opt
+testsuite:
+  - file://examples/eigenproblems/eigenproblems_ex3/drum1_mesh.e
+cmds:
+  - cmd: /repo/.libs/meshtool-opt -i /test.e
+    env:
+      DISABLE_SMOKETEST: '1'
+    filepath: /test.e
+    max_length: 36000
