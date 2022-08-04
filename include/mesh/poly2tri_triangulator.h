@@ -19,6 +19,7 @@
 #ifndef LIBMESH_POLY2TRI_TRIANGULATOR_H
 #define LIBMESH_POLY2TRI_TRIANGULATOR_H
 
+#include <memory>
 
 #include "libmesh/libmesh_config.h"
 
@@ -26,7 +27,6 @@
 
 // Local Includes
 #include "libmesh/dof_object.h"
-#include "libmesh/mesh_serializer.h"
 #include "libmesh/triangulator_interface.h"
 
 namespace libMesh
@@ -137,11 +137,6 @@ private:
    * versions
    */
   std::map<const Hole *, std::unique_ptr<ArbitraryHole>> replaced_holes;
-
-  /**
-   * We only operate on serialized meshes.
-   */
-  MeshSerializer _serializer;
 
   /**
    * Keep track of how many mesh nodes are boundary nodes.

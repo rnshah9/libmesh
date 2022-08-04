@@ -74,6 +74,11 @@ public:
   virtual Point inside() const = 0;
 
   /**
+   * Return true iff \p p lies inside the hole.
+   */
+  bool contains(Point p) const;
+
+  /**
    * Return the area of the hole
    */
   Real area() const;
@@ -114,6 +119,12 @@ public:
   { return _refine_bdy_allowed; }
 
 protected:
+
+  /**
+   * Helper function for contains(), also useful for MeshedHole::inside()
+   */
+  std::vector<Real> find_ray_intersections(Point ray_start,
+                                           Point ray_target) const;
 
   /**
    * Whether to allow boundary refinement.  True by default; specified
@@ -288,9 +299,9 @@ private:
  * edges in a subdomain with a listed id will define the hole.
  *
  * If no ids are given, the hole will be defined by all 1D Edge
- * elements and all 2D boundary edges.
+ * elements and all outward-facing 2D boundary edges.
  *
- * In either case the, hole definition should give a single connected
+ * In either case, the hole definition should give a single connected
  * boundary, topologically a circle.  The hole is defined when the
  * MeshedHole is constructed, and ignores any subsequent changes to
  * the input mesh.

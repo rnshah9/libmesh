@@ -142,7 +142,9 @@ data = meshes/1_quad.bxt.gz \
        meshes/bad_64bit_elem_integers.e \
        meshes/good_32bit_elem_integers.e \
        meshes/mesh_assign_test_mesh.xda \
-       meshes/shark_tooth_tri6.xda.gz
+       meshes/shark_tooth_tri6.xda.gz \
+       meshes/tetgen_one_tet10.ele \
+       meshes/tetgen_one_tet10.node
 
 unit_tests_sources += \
   $(data)
@@ -299,7 +301,11 @@ CLEANFILES = cube_mesh.xda \
              test_nemesis_read.nem.1.0 \
              rep.e \
              repl_with_nodal_soln.e \
-             repl_with_elem_vec.e
+             repl_with_elem_vec.e \
+             extra_integers.xda \
+             extra_integers.xdr \
+             write_elemset_data.xda \
+             write_elemset_data.xdr
 
 # need to link any data files for VPATH builds
 if LIBMESH_VPATH_BUILD

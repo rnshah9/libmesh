@@ -100,29 +100,84 @@ void TriangulatorInterface::elems_to_segments()
       // MeshedHole results later
       std::map<Point, dof_id_type> point_id_map;
 
-      for (auto & node : _mesh.node_ptr_range())
+      for (Node * node : _mesh.node_ptr_range())
         {
           // We're not going to support overlapping nodes on the boundary
-          if (point_id_map.count(*node))
-            libmesh_not_implemented();
+          libmesh_error_msg_if
+            (point_id_map.count(*node),
+             "TriangulatorInterface does not support overlapping nodes found at "
+             << static_cast<Point&>(*node));
 
           point_id_map.emplace(*node, node->id());
         }
 
       // We'll steal the ordering calculation from
       // the MeshedHole code, but reverse the ordering since it's
-      // an outer rather than an inner boundary.
-      const TriangulatorInterface::MeshedHole mh { _mesh };
+      // to be used as an outer rather than an inner boundary.
+      const TriangulatorInterface::MeshedHole mh { _mesh, this->_bdy_ids };
 
+      // And now we're done with elements.  Delete them lest they have
+      // dangling pointers to nodes we'll be deleting.
+      _mesh.clear_elems();
+
+      // If we've specified only a subset of the mesh as our outer
+      // boundary, then we may have nodes that don't actually fall
+      // inside that boundary.  Triangulator code doesn't like Steiner
+      // points that aren't inside the triangulation domain, so we
+      // need to get rid of them.
+
+      std::unordered_set<Node *> nodes_to_delete;
+      if (!this->_bdy_ids.empty())
+        {
+          for (auto & node : _mesh.node_ptr_range())
+            if (!mh.contains(*node))
+              nodes_to_delete.insert(node);
+        }
+
+      // Make segments from boundary nodes; also make sure we don't
+      // delete them.
       const std::size_t np = mh.n_points();
       for (auto i : make_range(np))
         {
           const Point pt = mh.point(np-i-1);
           const dof_id_type id0 = libmesh_map_find(point_id_map, pt);
+          nodes_to_delete.erase(_mesh.node_ptr(id0));
           const Point next_pt = mh.point((2*np-i-2)%np);
           const dof_id_type id1 = libmesh_map_find(point_id_map, next_pt);
           this->segments.emplace_back(id0, id1);
         }
+
+      for (Node * node : nodes_to_delete)
+        _mesh.delete_node(node);
+    }
+}
+
+
+
+void TriangulatorInterface::nodes_to_segments(dof_id_type max_node_id)
+{
+  // Don't try to override manually specified segments, or try to add
+  // segments if we're doing a convex hull
+  if (!this->segments.empty() || _triangulation_type != PSLG)
+    return;
+
+  for (auto node_it = _mesh.nodes_begin(),
+       node_end = _mesh.nodes_end();
+       node_it != node_end;)
+    {
+      Node * node = *node_it;
+
+      // If we're out of boundary nodes, the rest are going to be
+      // Steiner points or hole points
+      if (node->id() >= max_node_id)
+        break;
+
+      ++node_it;
+
+      Node * next_node = (node_it == node_end) ?
+        *_mesh.nodes_begin() : *node_it;
+
+      this->segments.emplace_back(node->id(), next_node->id());
     }
 }
 
@@ -141,39 +196,42 @@ void TriangulatorInterface::insert_any_extra_boundary_points()
   const int n_interpolated = this->get_interpolate_boundary_points();
   if ((_triangulation_type==PSLG) && n_interpolated)
     {
-      // Make a copy of the original points from the Mesh
-      std::vector<Point> original_points;
-      original_points.reserve (_mesh.n_nodes());
-      for (auto & node : _mesh.node_ptr_range())
-        original_points.push_back(*node);
+      // If we were lucky enough to start with contiguous node ids,
+      // let's keep them that way.
+      dof_id_type nn = _mesh.max_node_id();
 
-      // Clear out the mesh
-      _mesh.clear();
+      std::vector<std::pair<unsigned int, unsigned int>> old_segments =
+        std::move(this->segments);
 
-      // Make sure the new Mesh will be 2D
-      _mesh.set_mesh_dimension(2);
+      // We expect to have converted any elems and/or nodes into
+      // segments by now.
+      libmesh_assert(!old_segments.empty());
 
-      // Insert a new point on each PSLG at evenly spaced locations
+      this->segments.clear();
+
+      // Insert a new point on each segment at evenly spaced locations
       // between existing boundary points.
       // np=index into new points vector
       // n =index into original points vector
-      for (std::size_t np=0, n=0, tops=n_interpolated*original_points.size(); np<tops; ++np)
+      for (auto old_segment : old_segments)
         {
-          int offset = np % n_interpolated;
-
-          // Some entries are the original points
-          if (!offset)
-            _mesh.add_point(original_points[n++]);
-
-          else // the odd entries are equispaced along the original PSLG segments
+          Node * begin_node = _mesh.node_ptr(old_segment.first);
+          Node * end_node = _mesh.node_ptr(old_segment.second);
+          dof_id_type current_id = begin_node->id();
+          for (auto i : make_range(n_interpolated))
             {
-              libmesh_assert_less(n-1, original_points.size());
-              const std::size_t next_n = n % original_points.size();
+              // new points are equispaced along the original segments
               const Point new_point =
-                (offset*original_points[next_n] +
-                 (n_interpolated-offset)*original_points[n-1])/n_interpolated;
-              _mesh.add_point(new_point);
+                ((n_interpolated-i) * *(Point *)(begin_node) +
+                 (i+1) * *(Point *)(end_node)) /
+                (n_interpolated + 1);
+              Node * next_node = _mesh.add_point(new_point, nn++);
+              this->segments.emplace_back(current_id,
+                                          next_node->id());
+              current_id = next_node->id();
             }
+          this->segments.emplace_back(current_id,
+                                      end_node->id());
         }
     }
 }

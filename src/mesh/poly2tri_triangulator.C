@@ -28,6 +28,7 @@
 #include "libmesh/enum_elem_type.h"
 #include "libmesh/function_base.h"
 #include "libmesh/hashing.h"
+#include "libmesh/mesh_serializer.h"
 #include "libmesh/mesh_smoother_laplace.h"
 #include "libmesh/mesh_triangle_holes.h"
 #include "libmesh/unstructured_mesh.h"
@@ -49,7 +50,11 @@ struct P2TPointCompare
 
 p2t::Point to_p2t(const libMesh::Point & p)
 {
-  libmesh_assert_equal_to(p(2), 0);
+#if LIBMESH_DIM > 2
+  libmesh_error_msg_if
+    (p(2) != 0,
+     "Poly2TriTriangulator only supports point sets in the XY plane");
+#endif
 
   return {p(0), p(1)};
 }
@@ -151,7 +156,6 @@ namespace libMesh
 Poly2TriTriangulator::Poly2TriTriangulator(UnstructuredMesh & mesh,
                                            dof_id_type n_boundary_nodes)
   : TriangulatorInterface(mesh),
-    _serializer(_mesh),
     _n_boundary_nodes(n_boundary_nodes),
     _refine_bdy_allowed(true)
 {
@@ -164,6 +168,11 @@ Poly2TriTriangulator::~Poly2TriTriangulator() = default;
 // Primary function responsible for performing the triangulation
 void Poly2TriTriangulator::triangulate()
 {
+  // We only operate on serialized meshes.  And it's not safe to
+  // serialize earlier, because it would then be possible for the user
+  // to re-parallelize the mesh in between there and here.
+  MeshSerializer serializer(_mesh);
+
   // We don't yet support every set of Triangulator options in the
   // poly2tri implementation
 
@@ -184,6 +193,14 @@ void Poly2TriTriangulator::triangulate()
       _elem_type != TRI7)
     libmesh_not_implemented();
 
+  // If we have no explicit segments defined, we may get them from
+  // mesh elements
+  this->elems_to_segments();
+
+  // If we *still* have no explicit segments defined, we get them from
+  // the order of nodes.
+  this->nodes_to_segments(_n_boundary_nodes);
+
   // Insert additional new points in between existing boundary points,
   // if that is requested and reasonable
   this->insert_any_extra_boundary_points();
@@ -198,6 +215,8 @@ void Poly2TriTriangulator::triangulate()
   // don't yet
   if (_markers)
     libmesh_not_implemented();
+
+  _mesh.set_mesh_dimension(2);
 
   // To the naked eye, a few smoothing iterations usually looks better,
   // so we do this by default unless the user says not to.
@@ -273,9 +292,10 @@ void Poly2TriTriangulator::triangulate_current_points()
 
   // Unless we're using an explicit segments list, we assume node ids
   // are contiguous here.
+  dof_id_type nn = _mesh.max_node_id();
   if (this->segments.empty())
     libmesh_error_msg_if
-      (_mesh.n_nodes() != _mesh.max_node_id(),
+      (_mesh.n_nodes() != nn,
        "Poly2TriTriangulator needs contiguous node ids or explicit segments!");
 
   // And if we have more nodes than outer boundary points, the rest
@@ -300,10 +320,6 @@ void Poly2TriTriangulator::triangulate_current_points()
 
   // Prepare poly2tri points for our nodes, sorted into outer boundary
   // points and interior Steiner points.
-
-  // If we have no explicit segments defined, we may get them from
-  // mesh elements
-  this->elems_to_segments();
 
   if (this->segments.empty())
     {
@@ -455,7 +471,7 @@ void Poly2TriTriangulator::triangulate_current_points()
             }
           else
             {
-              Node * node = _mesh.add_point(p);
+              Node * node = _mesh.add_point(p, nn++);
               point_node_map[pt] = node;
             }
         }
@@ -514,8 +530,8 @@ void Poly2TriTriangulator::triangulate_current_points()
       p2t::Triangle & ptri = *ptri_ptr;
 
       // We always use TRI3 here, since that's what we have nodes for;
-      // if we need a higher order we'll convert at the end.
-      auto elem = Elem::build_with_id(_elem_type, next_id++);
+      // if we need a higher order we can convert at the end.
+      auto elem = Elem::build_with_id(TRI3, next_id++);
       for (auto v : make_range(3))
         {
           const p2t::Point & vertex = *ptri.GetPoint(v);
@@ -576,6 +592,11 @@ bool Poly2TriTriangulator::insert_refinement_points()
   std::unordered_map<Point, Node *> next_boundary_node;
 
   BoundaryInfo & boundary_info = _mesh.get_boundary_info();
+
+  // In cases where we've been working with contiguous node id ranges;
+  // let's keep it that way.
+  dof_id_type nn = _mesh.max_node_id();
+  dof_id_type ne = _mesh.max_elem_id();
 
   for (auto & elem : mesh.element_ptr_range())
     {
@@ -663,13 +684,13 @@ bool Poly2TriTriangulator::insert_refinement_points()
                                                    side))
                 {
                   new_pt = ray_start;
-                  new_node = mesh.add_point(new_pt);
+                  new_node = mesh.add_point(new_pt, nn++);
                   boundary_refine(side);
                 }
               else
                 {
                   new_pt = cavity_elem->vertex_average();
-                  new_node = mesh.add_point(new_pt);
+                  new_node = mesh.add_point(new_pt, nn++);
                   // This was going to be a side refinement but it's
                   // now an internal refinement
                   side = invalid_uint;
@@ -724,13 +745,13 @@ bool Poly2TriTriangulator::insert_refinement_points()
                   // Let's just try bisecting for now
                   new_pt = (cavity_elem->point(side) +
                             cavity_elem->point((side+1)%3)) / 2;
-                  new_node = mesh.add_point(new_pt);
+                  new_node = mesh.add_point(new_pt, nn++);
                   boundary_refine(side);
                 }
               else // Do the best we can under these restrictions
                 {
                   new_pt = cavity_elem->vertex_average();
-                  new_node = mesh.add_point(new_pt);
+                  new_node = mesh.add_point(new_pt, nn++);
 
                   // This was going to be a side refinement but it's
                   // now an internal refinement
@@ -738,7 +759,7 @@ bool Poly2TriTriangulator::insert_refinement_points()
                 }
             }
           else
-            new_node = mesh.add_point(new_pt);
+            new_node = mesh.add_point(new_pt, nn++);
         }
       else
         libmesh_assert(new_node);
@@ -785,7 +806,8 @@ bool Poly2TriTriangulator::insert_refinement_points()
       // cavity will be a source of one new triangle.
 
       // Keep maps for doing neighbor pointer assignment
-      std::map<Node *, Elem *> neighbors_CCW, neighbors_CW;
+      std::map<Node *, std::pair<Elem *, boundary_id_type>>
+        neighbors_CCW, neighbors_CW;
 
       for (Elem * old_elem : cavity)
         {
@@ -797,23 +819,35 @@ bool Poly2TriTriangulator::insert_refinement_points()
                   Node * node_CW = old_elem->node_ptr(s),
                        * node_CCW = old_elem->node_ptr((s+1)%3);
 
-                  auto set_neighbors = [&neighbors_CW, &neighbors_CCW,
-                                        &node_CW, &node_CCW](Elem * new_neigh)
+                  auto set_neighbors =
+                    [&neighbors_CW, &neighbors_CCW, &node_CW,
+                      &node_CCW, &boundary_info]
+                    (Elem * new_neigh, boundary_id_type bcid)
                   {
                     // Set clockwise neighbor and vice-versa if possible
                     auto CW_it = neighbors_CW.find(node_CW);
                     if (CW_it == neighbors_CW.end())
                       {
                         libmesh_assert(!neighbors_CCW.count(node_CW));
-                        neighbors_CCW[node_CW] = new_neigh;
+                        neighbors_CCW[node_CW] = std::make_pair(new_neigh, bcid);
                       }
                     else
                       {
-                        Elem * neigh_CW = CW_it->second;
+                        Elem * neigh_CW = CW_it->second.first;
                         if (new_neigh)
-                          new_neigh->set_neighbor(0, neigh_CW);
+                          {
+                            new_neigh->set_neighbor(0, neigh_CW);
+                            boundary_id_type bcid_CW = CW_it->second.second;
+                            if (bcid_CW != BoundaryInfo::invalid_id)
+                              boundary_info.add_side(new_neigh, 0, bcid_CW);
+
+                          }
                         if (neigh_CW)
-                          neigh_CW->set_neighbor(2, new_neigh);
+                          {
+                            neigh_CW->set_neighbor(2, new_neigh);
+                            if (bcid != BoundaryInfo::invalid_id)
+                              boundary_info.add_side(neigh_CW, 2, bcid);
+                          }
                         neighbors_CW.erase(CW_it);
                       }
 
@@ -822,15 +856,24 @@ bool Poly2TriTriangulator::insert_refinement_points()
                     if (CCW_it == neighbors_CCW.end())
                       {
                         libmesh_assert(!neighbors_CW.count(node_CCW));
-                        neighbors_CW[node_CCW] = new_neigh;
+                        neighbors_CW[node_CCW] = std::make_pair(new_neigh, bcid);
                       }
                     else
                       {
-                        Elem * neigh_CCW = CCW_it->second;
+                        Elem * neigh_CCW = CCW_it->second.first;
                         if (new_neigh)
-                          new_neigh->set_neighbor(2, neigh_CCW);
+                          {
+                            boundary_id_type bcid_CCW = CCW_it->second.second;
+                            new_neigh->set_neighbor(2, neigh_CCW);
+                            if (bcid_CCW != BoundaryInfo::invalid_id)
+                              boundary_info.add_side(new_neigh, 2, bcid_CCW);
+                          }
                         if (neigh_CCW)
-                          neigh_CCW->set_neighbor(0, new_neigh);
+                          {
+                            neigh_CCW->set_neighbor(0, new_neigh);
+                            if (bcid != BoundaryInfo::invalid_id)
+                              boundary_info.add_side(neigh_CCW, 0, bcid);
+                          }
                         neighbors_CCW.erase(CCW_it);
                       }
                   };
@@ -841,11 +884,14 @@ bool Poly2TriTriangulator::insert_refinement_points()
                   if (old_elem == cavity_elem &&
                       s == side)
                     {
-                      set_neighbors(nullptr);
+                      std::vector<boundary_id_type> bcids;
+                      boundary_info.boundary_ids(old_elem, s, bcids);
+                      libmesh_assert_equal_to(bcids.size(), 1);
+                      set_neighbors(nullptr, bcids[0]);
                       continue;
                     }
 
-                  auto new_elem = Elem::build(TRI3);
+                  auto new_elem = Elem::build_with_id(TRI3, ne++);
                   new_elem->set_node(0) = new_node;
                   new_elem->set_node(1) = node_CW;
                   new_elem->set_node(2) = node_CCW;
@@ -858,9 +904,15 @@ bool Poly2TriTriangulator::insert_refinement_points()
                         neigh->which_neighbor_am_i(old_elem);
                       neigh->set_neighbor(neigh_s, new_elem.get());
                     }
+                  else
+                    {
+                      std::vector<boundary_id_type> bcids;
+                      boundary_info.boundary_ids(old_elem, s, bcids);
+                      boundary_info.add_side(new_elem.get(), 1, bcids);
+                    }
 
                   // Set in-cavity neighbors' neighbor pointers
-                  set_neighbors(new_elem.get());
+                  set_neighbors(new_elem.get(), BoundaryInfo::invalid_id);
 
                   // C++ allows function argument evaluation in any
                   // order, but we need get() to precede move
@@ -868,6 +920,8 @@ bool Poly2TriTriangulator::insert_refinement_points()
                   new_elems.emplace(new_elem_ptr, std::move(new_elem));
                 }
             }
+
+          boundary_info.remove(old_elem);
 
           auto it = new_elems.find(old_elem);
           if (it == new_elems.end())
@@ -1115,25 +1169,23 @@ bool Poly2TriTriangulator::should_refine_elem(Elem & elem)
   //
   // See if we're meeting the local area target at all the elem
   // vertices first
-  Real local_area_target = (*area_func)(elem.point(0));
-  for (auto v : make_range(1u, elem.n_vertices()))
+  for (auto v : make_range(elem.n_vertices()))
     {
+      const Real local_area_target = (*area_func)(elem.point(v));
+      libmesh_error_msg_if
+        (local_area_target <= 0,
+         "Non-positive desired element areas are unachievable");
       if (area > local_area_target)
         return true;
-      local_area_target =
-        std::min(local_area_target,
-                 (*area_func)(elem.point(v)));
     }
-
-  if (area > local_area_target)
-    return true;
 
   // If our vertices are happy, it's still possible that our interior
   // isn't.  Are we allowed not to bother checking it?
   if (!min_area_target)
     return false;
 
-  libmesh_not_implemented();
+  libmesh_not_implemented_msg
+    ("Combining a minimum desired_area with an area function isn't yet supported.");
 }
 
 

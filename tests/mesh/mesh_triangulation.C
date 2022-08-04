@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <regex>
 
 
 using namespace libMesh;
@@ -28,14 +29,19 @@ public:
   LIBMESH_CPPUNIT_TEST_SUITE( MeshTriangulationTest );
 
   CPPUNIT_TEST( testTriangleHoleArea );
+  CPPUNIT_TEST( testTriangleHoleContains );
 
 #ifdef LIBMESH_HAVE_POLY2TRI
   CPPUNIT_TEST( testPoly2Tri );
+  CPPUNIT_TEST( testPoly2TriHalfDomain );
   CPPUNIT_TEST( testPoly2TriInterp );
-  CPPUNIT_TEST( testPoly2TriInterp3 );
+  CPPUNIT_TEST( testPoly2TriInterp2 );
   CPPUNIT_TEST( testPoly2TriHoles );
   CPPUNIT_TEST( testPoly2TriMeshedHoles );
   CPPUNIT_TEST( testPoly2TriEdges );
+  CPPUNIT_TEST( testPoly2TriBadEdges );
+  CPPUNIT_TEST( testPoly2TriBad1DMultiBoundary );
+  CPPUNIT_TEST( testPoly2TriBad2DMultiBoundary );
   CPPUNIT_TEST( testPoly2TriEdgesRefined );
   CPPUNIT_TEST( testPoly2TriSegments );
   CPPUNIT_TEST( testPoly2TriRefined );
@@ -53,10 +59,12 @@ public:
 
 #ifdef LIBMESH_HAVE_TRIANGLE
   CPPUNIT_TEST( testTriangle );
+  CPPUNIT_TEST( testTriangleHalfDomain );
   CPPUNIT_TEST( testTriangleInterp );
-  CPPUNIT_TEST( testTriangleInterp3 );
+  CPPUNIT_TEST( testTriangleInterp2 );
   CPPUNIT_TEST( testTriangleHoles );
   CPPUNIT_TEST( testTriangleMeshedHoles );
+  CPPUNIT_TEST( testTriangleEdges );
   CPPUNIT_TEST( testTriangleSegments );
 #endif
 
@@ -79,6 +87,34 @@ public:
     triangulator.minimum_angle() = 0;
     triangulator.smooth_after_generating() = false;
   }
+
+  void testExceptionBase(MeshBase & mesh,
+                         TriangulatorInterface & triangulator,
+                         const char * re)
+  {
+#ifdef LIBMESH_ENABLE_EXCEPTIONS
+    // We can't just CPPUNIT_ASSERT_THROW, because we want to make
+    // sure we were thrown from the right place with the right error
+    // message!
+    bool threw_desired_exception = false;
+    try {
+      this->testTriangulatorBase(mesh, triangulator);
+    }
+    catch (libMesh::LogicError & e) {
+      std::regex msg_regex(re);
+      CPPUNIT_ASSERT(std::regex_search(e.what(), msg_regex));
+      threw_desired_exception = true;
+    }
+    catch (CppUnit::Exception & e) {
+      throw e;
+    }
+    catch (...) {
+      CPPUNIT_ASSERT_MESSAGE("Unexpected exception type thrown", false);
+    }
+    CPPUNIT_ASSERT(threw_desired_exception);
+#endif
+  }
+
 
   void testTriangleHoleArea()
   {
@@ -125,6 +161,56 @@ public:
     TriangleInterface::PolygonHole square(center, radius, 4);
     LIBMESH_ASSERT_FP_EQUAL(square.area(), 2*radius*radius, TOLERANCE*TOLERANCE);
 #endif
+  }
+
+
+  void testTriangleHoleContains()
+  {
+    LOG_UNIT_TEST;
+
+    // Using center=(1,2), radius=2 for the heck of it
+    Point center{1,2};
+    Real radius = 2;
+    std::vector<TriangulatorInterface::PolygonHole> polyholes;
+
+    auto check_corners = [center, radius]
+      (const TriangulatorInterface::Hole & hole,
+       unsigned int np)
+      {
+        CPPUNIT_ASSERT_EQUAL(np, hole.n_points());
+        for (auto i : make_range(np))
+          {
+            const Real theta = i * 2 * libMesh::pi / np;
+            const Real xin = center(0) + radius * .99 * std::cos(theta);
+            const Real xout = center(0) + radius * 1.01 * std::cos(theta);
+            const Real yin = center(1) + radius * .99 * std::sin(theta);
+            const Real yout = center(1) + radius * 1.01 * std::sin(theta);
+
+            CPPUNIT_ASSERT(hole.contains(Point(xin, yin)));
+            CPPUNIT_ASSERT(!hole.contains(Point(xout, yout)));
+          }
+      };
+
+    const TriangulatorInterface::PolygonHole triangle(center, radius, 3);
+    check_corners(triangle, 3);
+    const TriangulatorInterface::PolygonHole diamond(center, radius, 4);
+    check_corners(diamond, 4);
+    const TriangulatorInterface::PolygonHole hexagon(center, radius, 6);
+    check_corners(hexagon, 6);
+
+    TriangulatorInterface::ArbitraryHole jaggy
+    {{1,0}, {{0,-1},{2,-1},{2,1},{1.75,-.5},{1.5,1},{1.25,-.5},{1,1},{.75,-.5},{.5,1},{.25,-.5},{0,1}}};
+
+    CPPUNIT_ASSERT(jaggy.contains({.1,-.3}));
+    CPPUNIT_ASSERT(jaggy.contains({.5,.9}));
+    CPPUNIT_ASSERT(jaggy.contains({.9,-.3}));
+    CPPUNIT_ASSERT(jaggy.contains({1,0}));
+    CPPUNIT_ASSERT(jaggy.contains({1.1,-.4}));
+    CPPUNIT_ASSERT(jaggy.contains({1.5,.9}));
+    CPPUNIT_ASSERT(jaggy.contains({1.9,-.3}));
+
+    // Extra corner case
+    CPPUNIT_ASSERT(jaggy.contains({.5,-.5}));
   }
 
 
@@ -380,120 +466,7 @@ public:
   }
 
 
-#ifdef LIBMESH_HAVE_TRIANGLE
-  void testTriangle()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    TriangleInterface triangle(mesh);
-    testTriangulator(mesh, triangle);
-  }
-
-
-  void testTriangleInterp()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    TriangleInterface triangle(mesh);
-    testTriangulatorInterp(mesh, triangle, 2, 6);
-  }
-
-
-  void testTriangleInterp3()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    TriangleInterface triangle(mesh);
-    testTriangulatorInterp(mesh, triangle, 3, 10);
-  }
-
-
-  void testTriangleHoles()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    TriangleInterface triangle(mesh);
-    testTriangulatorHoles(mesh, triangle);
-  }
-
-
-  void testTriangleMeshedHoles()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    TriangleInterface triangle(mesh);
-    testTriangulatorMeshedHoles(mesh, triangle);
-  }
-
-
-  void testTriangleSegments()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    TriangleInterface triangle(mesh);
-    testTriangulatorSegments(mesh, triangle);
-  }
-#endif // LIBMESH_HAVE_TRIANGLE
-
-
-#ifdef LIBMESH_HAVE_POLY2TRI
-  void testPoly2Tri()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    Poly2TriTriangulator p2t_tri(mesh);
-    testTriangulator(mesh, p2t_tri);
-  }
-
-
-  void testPoly2TriInterp()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    Poly2TriTriangulator p2t_tri(mesh);
-    testTriangulatorInterp(mesh, p2t_tri, 2, 6);
-  }
-
-
-  void testPoly2TriInterp3()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    Poly2TriTriangulator p2t_tri(mesh);
-    testTriangulatorInterp(mesh, p2t_tri, 3, 10);
-  }
-
-
-  void testPoly2TriHoles()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    Poly2TriTriangulator p2t_tri(mesh);
-    testTriangulatorHoles(mesh, p2t_tri);
-  }
-
-
-  void testPoly2TriMeshedHoles()
-  {
-    LOG_UNIT_TEST;
-
-    Mesh mesh(*TestCommWorld);
-    Poly2TriTriangulator p2t_tri(mesh);
-    testTriangulatorMeshedHoles(mesh, p2t_tri);
-  }
-
-
-  void testPoly2TriEdgesMesh(MeshBase & mesh)
+  void testEdgesMesh(MeshBase & mesh)
   {
     // The same quad as testTriangulator, but out of order
     auto node0 = mesh.add_point(Point(0,0), 0);
@@ -519,15 +492,302 @@ public:
   }
 
 
+  void testHalfDomain(MeshBase & mesh,
+                      TriangulatorInterface & triangulator)
+  {
+    // A pentagon we'll avoid via subdomain ids
+    auto node4 = mesh.add_point(Point(2,0), 4);
+    auto node5 = mesh.add_point(Point(3,0), 5);
+    auto node6 = mesh.add_point(Point(3,2), 6);
+    auto node7 = mesh.add_point(Point(2,2), 7);
+    auto node8 = mesh.add_point(Point(2,1), 8);
+
+    auto edge45 = mesh.add_elem(Elem::build(EDGE2));
+    edge45->set_node(0) = node4;
+    edge45->set_node(1) = node5;
+    edge45->subdomain_id() = 1;
+    auto edge56 = mesh.add_elem(Elem::build(EDGE2));
+    edge56->set_node(0) = node5;
+    edge56->set_node(1) = node6;
+    edge56->subdomain_id() = 1;
+    auto edge67 = mesh.add_elem(Elem::build(EDGE2));
+    edge67->set_node(0) = node6;
+    edge67->set_node(1) = node7;
+    edge67->subdomain_id() = 1;
+    auto edge78 = mesh.add_elem(Elem::build(EDGE2));
+    edge78->set_node(0) = node7;
+    edge78->set_node(1) = node8;
+    edge78->subdomain_id() = 1;
+    auto edge84 = mesh.add_elem(Elem::build(EDGE2));
+    edge84->set_node(0) = node8;
+    edge84->set_node(1) = node4;
+    edge84->subdomain_id() = 1;
+
+    testEdgesMesh(mesh);
+
+    std::set<std::size_t> bdy_ids {0};
+    triangulator.set_outer_boundary_ids(bdy_ids);
+
+    this->testTriangulatorBase(mesh, triangulator);
+  }
+
+
+#ifdef LIBMESH_HAVE_TRIANGLE
+  void testTriangle()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangle(mesh);
+    testTriangulator(mesh, triangle);
+  }
+
+
+  void testTriangleHalfDomain()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangle(mesh);
+    testHalfDomain(mesh, triangle);
+  }
+
+
+  void testTriangleInterp()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangle(mesh);
+    testTriangulatorInterp(mesh, triangle, 1, 6);
+  }
+
+
+  void testTriangleInterp2()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangle(mesh);
+    testTriangulatorInterp(mesh, triangle, 2, 10);
+  }
+
+
+  void testTriangleHoles()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangle(mesh);
+    testTriangulatorHoles(mesh, triangle);
+  }
+
+
+  void testTriangleMeshedHoles()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangle(mesh);
+    testTriangulatorMeshedHoles(mesh, triangle);
+  }
+
+
+  void testTriangleEdges()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangulator(mesh);
+    testEdgesMesh(mesh);
+
+    this->testTriangulatorBase(mesh, triangulator);
+  }
+
+
+  void testTriangleSegments()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    TriangleInterface triangle(mesh);
+    testTriangulatorSegments(mesh, triangle);
+  }
+#endif // LIBMESH_HAVE_TRIANGLE
+
+
+#ifdef LIBMESH_HAVE_POLY2TRI
+  void testPoly2Tri()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator p2t_tri(mesh);
+    testTriangulator(mesh, p2t_tri);
+  }
+
+
+  void testPoly2TriHalfDomain()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator p2t_tri(mesh);
+    testHalfDomain(mesh, p2t_tri);
+  }
+
+
+  void testPoly2TriInterp()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator p2t_tri(mesh);
+    testTriangulatorInterp(mesh, p2t_tri, 1, 6);
+  }
+
+
+  void testPoly2TriInterp2()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator p2t_tri(mesh);
+    testTriangulatorInterp(mesh, p2t_tri, 2, 10);
+  }
+
+
+  void testPoly2TriHoles()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator p2t_tri(mesh);
+    testTriangulatorHoles(mesh, p2t_tri);
+  }
+
+
+  void testPoly2TriMeshedHoles()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator p2t_tri(mesh);
+    testTriangulatorMeshedHoles(mesh, p2t_tri);
+  }
+
+
   void testPoly2TriEdges()
   {
     LOG_UNIT_TEST;
 
     Mesh mesh(*TestCommWorld);
     Poly2TriTriangulator triangulator(mesh);
-    testPoly2TriEdgesMesh(mesh);
+    testEdgesMesh(mesh);
 
     this->testTriangulatorBase(mesh, triangulator);
+  }
+
+
+  void testPoly2TriBadEdges()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator triangulator(mesh);
+
+    // The same quad as testTriangulator, but out of order
+    auto node0 = mesh.add_point(Point(0,0), 0);
+    auto node1 = mesh.add_point(Point(1,2), 1);
+    auto node2 = mesh.add_point(Point(1,0), 2);
+    auto node3 = mesh.add_point(Point(0,1), 3);
+
+    // Edges, but not enough to complete the quad
+    auto edge13 = mesh.add_elem(Elem::build(EDGE2));
+    edge13->set_node(0) = node1;
+    edge13->set_node(1) = node3;
+    auto edge02 = mesh.add_elem(Elem::build(EDGE2));
+    edge02->set_node(0) = node0;
+    edge02->set_node(1) = node2;
+    auto edge30 = mesh.add_elem(Elem::build(EDGE2));
+    edge30->set_node(0) = node3;
+    edge30->set_node(1) = node0;
+
+    mesh.prepare_for_use();
+
+    testExceptionBase(mesh, triangulator, "Bad edge topology");
+  }
+
+
+  void testPoly2TriBad1DMultiBoundary()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator triangulator(mesh);
+
+    // Two separate triangles
+    auto node0 = mesh.add_point(Point(0,0), 0);
+    auto node1 = mesh.add_point(Point(0,1), 1);
+    auto node2 = mesh.add_point(Point(1,0), 2);
+
+    auto node3 = mesh.add_point(Point(2,0), 3);
+    auto node4 = mesh.add_point(Point(2,1), 4);
+    auto node5 = mesh.add_point(Point(3,0), 5);
+
+    auto edge01 = mesh.add_elem(Elem::build(EDGE2));
+    edge01->set_node(0) = node0;
+    edge01->set_node(1) = node1;
+    auto edge12 = mesh.add_elem(Elem::build(EDGE2));
+    edge12->set_node(0) = node1;
+    edge12->set_node(1) = node2;
+    auto edge20 = mesh.add_elem(Elem::build(EDGE2));
+    edge20->set_node(0) = node2;
+    edge20->set_node(1) = node0;
+
+    auto edge34 = mesh.add_elem(Elem::build(EDGE2));
+    edge34->set_node(0) = node3;
+    edge34->set_node(1) = node4;
+    auto edge45 = mesh.add_elem(Elem::build(EDGE2));
+    edge45->set_node(0) = node4;
+    edge45->set_node(1) = node5;
+    auto edge53 = mesh.add_elem(Elem::build(EDGE2));
+    edge53->set_node(0) = node5;
+    edge53->set_node(1) = node3;
+
+    mesh.prepare_for_use();
+
+    testExceptionBase(mesh, triangulator, "multiple loops of Edge");
+  }
+
+  void testPoly2TriBad2DMultiBoundary()
+  {
+    LOG_UNIT_TEST;
+
+    Mesh mesh(*TestCommWorld);
+    Poly2TriTriangulator triangulator(mesh);
+
+    // Two separate triangles
+    auto node0 = mesh.add_point(Point(0,0), 0);
+    auto node1 = mesh.add_point(Point(1,0), 1);
+    auto node2 = mesh.add_point(Point(0,1), 2);
+
+    auto node3 = mesh.add_point(Point(2,0), 3);
+    auto node4 = mesh.add_point(Point(3,0), 4);
+    auto node5 = mesh.add_point(Point(2,1), 5);
+
+    auto tri012 = mesh.add_elem(Elem::build(TRI3));
+    tri012->set_node(0) = node0;
+    tri012->set_node(1) = node1;
+    tri012->set_node(2) = node2;
+    auto tri345 = mesh.add_elem(Elem::build(TRI3));
+    tri345->set_node(0) = node3;
+    tri345->set_node(1) = node4;
+    tri345->set_node(2) = node5;
+
+    mesh.prepare_for_use();
+
+    testExceptionBase(mesh, triangulator, "cannot choose one");
   }
 
 
@@ -537,7 +797,7 @@ public:
 
     Mesh mesh(*TestCommWorld);
     Poly2TriTriangulator triangulator(mesh);
-    testPoly2TriEdgesMesh(mesh);
+    testEdgesMesh(mesh);
     testPoly2TriRefinementBase(mesh, nullptr, 1.5, 14);
   }
 

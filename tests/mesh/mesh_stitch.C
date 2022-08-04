@@ -45,15 +45,18 @@ public:
                       const std::string & boundary_name_prefix)
   {
     BoundaryInfo & boundary_info = mesh.get_boundary_info();
-    const auto & mesh_boundary_ids = boundary_info.get_boundary_ids();
+    const auto mesh_boundary_ids = boundary_info.get_global_boundary_ids();
     for (auto rit = mesh_boundary_ids.rbegin(); rit != mesh_boundary_ids.rend(); ++rit)
     {
-      boundary_info.sideset_name(*rit + boundary_id_offset) =
-          boundary_name_prefix + boundary_info.sideset_name(*rit);
-      boundary_info.nodeset_name(*rit + boundary_id_offset) =
-          boundary_name_prefix + boundary_info.nodeset_name(*rit);
+      const auto old_sideset_name = boundary_info.sideset_name(*rit);
+      const auto old_nodeset_name = boundary_info.nodeset_name(*rit);
 
       MeshTools::Modification::change_boundary_id(mesh, *rit, *rit + boundary_id_offset);
+
+      boundary_info.sideset_name(*rit + boundary_id_offset) =
+        boundary_name_prefix + old_sideset_name;
+      boundary_info.nodeset_name(*rit + boundary_id_offset) =
+        boundary_name_prefix + old_nodeset_name;
     }
   }
 
@@ -86,6 +89,8 @@ public:
     const auto & nbi = bi.get_node_boundary_ids();
     CPPUNIT_ASSERT_EQUAL(expected_size, nbi.size());
 
+    // We expect that the "zero_right" and "one_left" boundaries have
+    // disappeared after being stitched together.
     std::set<std::string> expected_names = {{"zero_left",
                                              "zero_top",
                                              "zero_front",
